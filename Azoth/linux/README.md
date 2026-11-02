@@ -5,17 +5,18 @@ Crate's "System Information" mode. Works over the USB cable and the ROG Omni
 Receiver (2.4 GHz dongle). It follows whichever one the keyboard answers on, so
 you can switch between cable and wireless without restarting anything.
 
-Tested on Fedora 44 (KDE) with an AMD Ryzen 9 9950X3D and an NVIDIA RTX 4090.
+Tested on Fedora 44 (KDE) with an AMD Ryzen 9 9950X3D, an NVIDIA RTX 4090 and
+the Ryzen's integrated AMD graphics.
 
 ## Requirements
 
-- Python 3 (no extra packages).
-- An AMD CPU for `cpu_temp` (the `k10temp` driver, loaded by default).
-- The NVIDIA driver for `gpu_temp` / `gpu_usage` (it provides
-  `libnvidia-ml.so.1`; check with `nvidia-smi`).
-- systemd and a desktop login. The keyboard is opened as your user through
-  the udev `uaccess` tag, which grants access to whoever is logged in at the
-  machine's own screen (not over SSH).
+- Python 3 (no extra packages) and systemd.
+- A desktop login. The keyboard is opened as your user through the udev
+  `uaccess` tag, which grants access to whoever is logged in at the machine's
+  own screen (not over SSH).
+- Nothing hardware-specific to configure for the default display. Sensors
+  are found automatically (see [Sensors](#sensors)); GPU sensors need the
+  NVIDIA driver (`libnvidia-ml.so.1`, check with `nvidia-smi`) or `amdgpu`.
 
 ## Install
 
@@ -83,18 +84,43 @@ then restart the service (see the table above).
 
 ## Sensors
 
-| name      | source                                  | confirmed on screen |
-|-----------|-----------------------------------------|---------------------|
-| cpu_temp  | k10temp `Tctl` (AMD)                    | yes                 |
-| gpu_temp  | NVML (NVIDIA driver)                    | yes                 |
-| cpu_usage | /proc/stat                              | yes                 |
-| gpu_usage | NVML                                    | yes                 |
-| ram_usage | /proc/meminfo                           | yes                 |
+Run `python3 azoth_oled.py --list-sensors` for the full list.
 
-The keyboard also supports CPU/GPU frequency and voltage, VRM temperature,
-DRAM frequency and voltage, and CPU and chassis fan speeds (see
-`azoth_oled.py --list-sensors` and `../PROTOCOL.md`). The daemon has no Linux
-source for those yet and says so if you ask for one.
+**Found automatically:**
+
+| name      | source |
+|-----------|--------|
+| cpu_usage | `/proc/stat` |
+| cpu_temp  | the CPU's hwmon driver: AMD `k10temp` (Tdie if shown, else Tctl), AMD `zenpower` (Tdie), Intel `coretemp` (hottest package) |
+| cpu_freq  | cpufreq: the highest current core clock |
+| ram_usage | `/proc/meminfo` (MemTotal - MemAvailable) |
+| gpu_usage, gpu_temp, gpu_freq | NVIDIA: NVML. AMD: `gpu_busy_percent` and the card's hwmon (`edge`, `sclk`) |
+| gpu_volt  | AMD only (`vddgfx`); NVIDIA doesn't report GPU voltage on Linux |
+
+About AMD `Tctl`: on some older Ryzen and Threadripper models `Tctl` is
+reported higher than the real temperature (an offset used for fan control),
+and `k10temp` then also shows `Tdie`, the real die temperature, which is what
+the daemon uses. Current Ryzen models have no offset and only show `Tctl`.
+
+**Which GPU:** the one with the most dedicated VRAM, so a discrete card is
+used rather than integrated graphics. It is logged at start
+(`GPU: NVIDIA GeForce RTX 4090`). `--list-gpus` lists them and `--gpu N`
+picks another. If two GPUs tie it stops and asks you to choose.
+
+**Board-specific sensors** (cpu_fan, cpu_opt_fan, cpu_volt, vrm_temp,
+ram_freq, ram_volt, chassis_fan) come from motherboard chips whose input
+names differ on every board, so you map them yourself. `--list-hwmon` shows
+every chip and input with its current raw value; then:
+
+    python3 azoth_oled.py --show cpu_fan --show chassis_fan --hwmon cpu_fan=nct6799/fan2 --hwmon chassis_fan=nct6799/fan3
+
+CHIP is the hwmon name (or `hwmonN` if several chips share a name); INPUT is
+an input (`fan2`, `temp1`, `in0`) or its label. `--hwmon` also overrides an
+automatic source, e.g. `--hwmon cpu_temp=k10temp/Tccd1`. Temperatures,
+voltages (mV), fans (RPM) and frequencies are converted to what the keyboard
+expects. Motherboard fan and voltage chips often need a driver, e.g.
+`nct6775` (many ASUS/Gigabyte/ASRock boards) or the out-of-tree `nct6687d`
+(MSI boards).
 
 ## Troubleshooting
 
@@ -102,8 +128,9 @@ source for those yet and says so if you ask for one.
 |---------|------------|
 | `No permission to open /dev/hidrawN` | Install the udev rule (step 2) and make sure you are logged in at the machine's desktop, not only over SSH. `getfacl /dev/hidrawN` should list your user. |
 | `Waiting for the ROG Azoth ...` | The keyboard isn't answering on either connection. Press a key to wake it, and check the cable or that the keyboard is in 2.4 GHz mode with the receiver plugged in. |
-| `cpu_temp: no k10temp 'Tctl' sensor` | Not an AMD CPU, or `k10temp` isn't loaded (`sudo modprobe k10temp`). |
-| `libnvidia-ml.so.1 not found` | The NVIDIA driver isn't installed, or use sensors that don't need it. |
+| `cpu_temp: no CPU temperature driver found` | Load the CPU's driver (`sudo modprobe k10temp` or `coretemp`), or map one with `--hwmon cpu_temp=CHIP/INPUT`. |
+| `An NVIDIA GPU is installed but libnvidia-ml.so.1 can't be loaded` | Install the NVIDIA driver (`nvidia-smi` should work). |
+| `board-specific sensor; map it ...` | See [Sensors](#sensors): use `--list-hwmon` and `--hwmon`. |
 
 ## Uninstall
 

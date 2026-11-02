@@ -2,19 +2,23 @@
 """Stream system info to the ROG Azoth (M701) OLED on Linux.
 
 The keyboard shows its "System Information" screen while it is receiving
-0x66 packets on the vendor HID interface (usage page 0xFF00), and goes back to
-its animation when they stop. See ../PROTOCOL.md.
+0x66 packets on the vendor HID interface (usage page 0xFF00) and keeps the
+last frame when they stop. See ../PROTOCOL.md.
 
 Usage:
   azoth_oled.py                       (CPU temp + GPU temp)
   azoth_oled.py --show cpu_temp --show gpu_usage --verbose
-  azoth_oled.py --list-sensors
+  azoth_oled.py --show cpu_fan --hwmon cpu_fan=nct6799/fan2
+  azoth_oled.py --list-sensors | --list-gpus | --list-hwmon
 
 Works over the USB cable (0B05:1A83) and the ROG Omni Receiver dongle
 (0B05:1ACE). It uses whichever connection the keyboard acknowledges on, and
 re-checks when that connection stops answering (mode switch, sleep, unplug).
-No third-party Python packages are needed. GPU sensors use NVIDIA's NVML
-library (libnvidia-ml.so.1, installed with the NVIDIA driver).
+
+Sensors come from standard Linux interfaces: /proc, cpufreq, the CPU's hwmon
+driver (k10temp, zenpower, coretemp), amdgpu sysfs, and NVIDIA's NVML library
+(libnvidia-ml.so.1, part of the NVIDIA driver). Board-specific sensors (fans,
+voltages, VRM) are mapped with --hwmon. No third-party Python packages.
 """
 import argparse
 import ctypes
@@ -176,31 +180,98 @@ GONE = (errno.ENODEV, errno.EIO, errno.ENOENT, errno.EPIPE)
 
 
 # ---------------------------------------------------------------- sensors
+#
+# Every sensor is found from standard Linux interfaces (/proc, cpufreq,
+# hwmon, amdgpu sysfs, NVIDIA NVML). Motherboard sensors (fans, voltages,
+# VRM) have board-specific input names, so they are mapped explicitly with
+# --hwmon. Anything that can't be found stops the daemon with a message.
 
-class CpuTemp:
-    """AMD k10temp Tctl, in degrees C."""
+HWMON_ROOT = "/sys/class/hwmon"
 
-    def __init__(self):
-        self.path = None
-        for hw in glob.glob("/sys/class/hwmon/hwmon*"):
-            try:
-                with open(os.path.join(hw, "name")) as f:
-                    if f.read().strip() != "k10temp":
-                        continue
-            except OSError:
-                continue
-            for lab in glob.glob(os.path.join(hw, "temp*_label")):
-                with open(lab) as f:
-                    if f.read().strip() == "Tctl":
-                        self.path = lab.replace("_label", "_input")
-        if not self.path:
-            sys.exit("cpu_temp: no k10temp 'Tctl' sensor in /sys/class/hwmon. "
-                     "Is the k10temp module loaded (modprobe k10temp)?")
+# Sensors found automatically. The rest need --hwmon SENSOR=CHIP/INPUT.
+AUTO_SENSORS = ("cpu_usage", "cpu_temp", "cpu_freq", "ram_usage",
+                "gpu_usage", "gpu_temp", "gpu_freq", "gpu_volt")
 
-    def read(self):
-        with open(self.path) as f:
-            return int(f.read()) / 1000.0
 
+class SensorError(Exception):
+    pass
+
+
+def _read(path):
+    with open(path) as f:
+        return f.read().strip()
+
+
+# ---- hwmon
+
+def hwmon_chips():
+    """[(chip name, hwmonN dir)] for every hwmon device, in hwmonN order."""
+    chips = []
+    for d in sorted(glob.glob(os.path.join(HWMON_ROOT, "hwmon*")),
+                    key=lambda p: int(p.rsplit("hwmon", 1)[1])):
+        try:
+            chips.append((_read(os.path.join(d, "name")), d))
+        except OSError:
+            continue
+    return chips
+
+
+def hwmon_inputs(d):
+    """{input stem: label or None} for one hwmon dir, e.g. {'temp1': 'Tctl'}."""
+    out = {}
+    for p in sorted(glob.glob(os.path.join(d, "*_input"))):
+        stem = os.path.basename(p)[:-len("_input")]
+        try:
+            out[stem] = _read(os.path.join(d, stem + "_label"))
+        except OSError:
+            out[stem] = None
+    return out
+
+
+# hwmon sysfs units -> what the keyboard expects
+_HWMON_SCALE = {"temp": 0.001,   # millidegree C -> C
+                "in": 1.0,       # mV -> mV
+                "fan": 1.0,      # RPM -> RPM
+                "freq": 1e-6}    # Hz -> MHz
+
+
+def hwmon_reader(d, stem):
+    kind = stem.rstrip("0123456789")
+    if kind not in _HWMON_SCALE:
+        raise SensorError(f"{d}/{stem}: unsupported hwmon input type {kind!r} "
+                          f"(supported: {', '.join(_HWMON_SCALE)})")
+    path = os.path.join(d, stem + "_input")
+    scale = _HWMON_SCALE[kind]
+    return lambda: int(_read(path)) * scale
+
+
+def resolve_hwmon(spec):
+    """'CHIP/INPUT' -> reader. CHIP is a hwmon name (nct6799) or hwmonN;
+    INPUT is an input (fan2, temp1, in0) or its label ('CPU Fan')."""
+    chip, sep, ident = spec.partition("/")
+    if not sep or not chip or not ident:
+        raise SensorError(f"--hwmon source {spec!r}: expected CHIP/INPUT, "
+                          "e.g. nct6799/fan2 (see --list-hwmon)")
+    chips = [(n, d) for n, d in hwmon_chips() if chip in (n, os.path.basename(d))]
+    if not chips:
+        raise SensorError(f"--hwmon: no hwmon chip called {chip!r}. Run --list-hwmon "
+                          "to see the chips on this machine.")
+    if len(chips) > 1:
+        raise SensorError(f"--hwmon: {len(chips)} chips are called {chip!r} "
+                          f"({', '.join(os.path.basename(d) for _, d in chips)}); "
+                          "use the hwmonN name instead.")
+    _, d = chips[0]
+    inputs = hwmon_inputs(d)
+    if ident in inputs:
+        return hwmon_reader(d, ident)
+    by_label = [s for s, lab in inputs.items() if lab == ident]
+    if len(by_label) == 1:
+        return hwmon_reader(d, by_label[0])
+    raise SensorError(f"--hwmon: {chip} has no input or label {ident!r}. Run "
+                      "--list-hwmon to see its inputs.")
+
+
+# ---- CPU and memory
 
 class CpuUsage:
     """Whole-CPU busy percent from /proc/stat, averaged since the last read."""
@@ -222,76 +293,249 @@ class CpuUsage:
         return 0.0 if dt <= 0 else 100.0 * (dt - di) / dt
 
 
-class RamUsage:
-    def read(self):
-        info = {}
-        with open("/proc/meminfo") as f:
-            for line in f:
-                k, v = line.split(":", 1)
-                info[k] = int(v.split()[0])
-        return 100.0 * (info["MemTotal"] - info["MemAvailable"]) / info["MemTotal"]
+def ram_usage():
+    info = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            k, v = line.split(":", 1)
+            info[k] = int(v.split()[0])
+    return 100.0 * (info["MemTotal"] - info["MemAvailable"]) / info["MemTotal"]
 
+
+def cpu_freq_reader():
+    """Highest current core clock in MHz, from cpufreq."""
+    paths = glob.glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq")
+    if not paths:
+        raise SensorError("cpu_freq: no cpufreq data in /sys/devices/system/cpu "
+                          "(no cpufreq driver loaded).")
+    return lambda: max(int(_read(p)) for p in paths) / 1000.0  # kHz -> MHz
+
+
+def cpu_temp_reader():
+    """CPU temperature from the CPU's own hwmon driver.
+
+    AMD k10temp: Tdie if the driver shows it, otherwise Tctl. On older Ryzen
+    and Threadripper parts Tctl carries a fixed offset for fan control and the
+    driver adds Tdie (the real die temperature); on parts without an offset
+    only Tctl exists and it is the die temperature.
+    AMD zenpower (out-of-tree replacement for k10temp): Tdie.
+    Intel coretemp: the hottest "Package id N".
+    """
+    chips = hwmon_chips()
+    names = [n for n, _ in chips]
+    for name, d in chips:
+        inputs = hwmon_inputs(d)
+        labels = {lab: s for s, lab in inputs.items() if lab}
+        if name == "k10temp":
+            stem = labels.get("Tdie") or labels.get("Tctl")
+            if stem:
+                return hwmon_reader(d, stem)
+        elif name == "zenpower" and "Tdie" in labels:
+            return hwmon_reader(d, labels["Tdie"])
+        elif name == "coretemp":
+            pkgs = [hwmon_reader(d, s) for lab, s in labels.items()
+                    if lab.startswith("Package id")]
+            if pkgs:
+                return lambda: max(r() for r in pkgs)
+    raise SensorError("cpu_temp: no CPU temperature driver found (looked for "
+                      "k10temp, zenpower, coretemp; this machine has: "
+                      f"{', '.join(names) or 'no hwmon chips'}). Load the driver, "
+                      "or map it with --hwmon cpu_temp=CHIP/INPUT.")
+
+
+# ---- GPUs
 
 class _NvmlUtilization(ctypes.Structure):
     _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
 
 
-class Nvml:
-    """Minimal NVML binding for one GPU."""
+class _NvmlMemory(ctypes.Structure):
+    _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong),
+                ("used", ctypes.c_ulonglong)]
 
-    def __init__(self, gpu_index):
+
+class Nvml:
+    """Minimal NVML binding (libnvidia-ml.so.1 ships with the NVIDIA driver)."""
+
+    def __init__(self):
         try:
             self.lib = ctypes.CDLL("libnvidia-ml.so.1")
         except OSError:
-            sys.exit("gpu sensors: libnvidia-ml.so.1 not found. It ships with the "
-                     "NVIDIA driver; check the driver is installed (nvidia-smi).")
-        self._check(self.lib.nvmlInit_v2(), "nvmlInit")
-        self.handle = ctypes.c_void_p()
-        self._check(self.lib.nvmlDeviceGetHandleByIndex_v2(
-            ctypes.c_uint(gpu_index), ctypes.byref(self.handle)),
-            f"open GPU {gpu_index}")
+            raise SensorError("An NVIDIA GPU is installed but libnvidia-ml.so.1 can't "
+                              "be loaded. Install the NVIDIA driver (check nvidia-smi).")
+        self.lib.nvmlErrorString.restype = ctypes.c_char_p
+        self.check(self.lib.nvmlInit_v2(), "nvmlInit")
 
-    def _check(self, rc, what):
+    def check(self, rc, what):
         if rc != 0:
-            self.lib.nvmlErrorString.restype = ctypes.c_char_p
-            sys.exit(f"NVML {what} failed: {self.lib.nvmlErrorString(rc).decode()}")
+            raise SensorError(f"NVML {what} failed: {self.lib.nvmlErrorString(rc).decode()}")
 
-    def temp(self):
-        t = ctypes.c_uint()
-        self._check(self.lib.nvmlDeviceGetTemperature(
-            self.handle, ctypes.c_int(0), ctypes.byref(t)), "temperature")
-        return float(t.value)
+    def handles(self):
+        n = ctypes.c_uint()
+        self.check(self.lib.nvmlDeviceGetCount_v2(ctypes.byref(n)), "device count")
+        out = []
+        for i in range(n.value):
+            h = ctypes.c_void_p()
+            self.check(self.lib.nvmlDeviceGetHandleByIndex_v2(ctypes.c_uint(i),
+                                                              ctypes.byref(h)), f"GPU {i}")
+            out.append(h)
+        return out
 
-    def usage(self):
-        u = _NvmlUtilization()
-        self._check(self.lib.nvmlDeviceGetUtilizationRates(
-            self.handle, ctypes.byref(u)), "utilization")
-        return float(u.gpu)
+    def uint(self, fn, h, *args):
+        v = ctypes.c_uint()
+        self.check(getattr(self.lib, fn)(h, *args, ctypes.byref(v)), fn)
+        return v.value
 
 
-def make_readers(names, gpu_index):
-    nvml = None
-    readers = {}
-    for name in names:
-        if name in readers:
+class NvidiaGpu:
+    def __init__(self, nvml, handle):
+        self.nvml, self.h = nvml, handle
+        buf = ctypes.create_string_buffer(96)
+        nvml.check(nvml.lib.nvmlDeviceGetName(handle, buf, ctypes.c_uint(96)), "name")
+        mem = _NvmlMemory()
+        nvml.check(nvml.lib.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem)), "memory")
+        self.name, self.vram = buf.value.decode(), mem.total
+
+    def reader(self, metric):
+        n, h = self.nvml, self.h
+        if metric == "temp":
+            return lambda: float(n.uint("nvmlDeviceGetTemperature", h, ctypes.c_int(0)))
+        if metric == "freq":
+            return lambda: float(n.uint("nvmlDeviceGetClockInfo", h, ctypes.c_int(0)))
+        if metric == "usage":
+            def usage():
+                u = _NvmlUtilization()
+                n.check(n.lib.nvmlDeviceGetUtilizationRates(h, ctypes.byref(u)), "utilization")
+                return float(u.gpu)
+            return usage
+        raise SensorError(f"gpu_{metric}: NVIDIA's driver doesn't report GPU {metric} "
+                          "on Linux.")
+
+
+class AmdGpu:
+    """amdgpu sysfs: gpu_busy_percent and the card's hwmon (edge, sclk, vddgfx)."""
+
+    def __init__(self, card):
+        self.dev = os.path.join(card, "device")
+        slot = os.path.basename(os.path.realpath(self.dev))
+        self.name = f"AMD GPU {_read(self.dev + '/vendor')[2:]}:" \
+                    f"{_read(self.dev + '/device')[2:]} at {slot}"
+        try:
+            self.vram = int(_read(self.dev + "/mem_info_vram_total"))
+        except OSError:
+            self.vram = 0
+        hw = glob.glob(self.dev + "/hwmon/hwmon*")
+        self.hwmon = hw[0] if hw else None
+
+    def _hwmon_label(self, label, metric):
+        if self.hwmon:
+            for stem, lab in hwmon_inputs(self.hwmon).items():
+                if lab == label:
+                    return hwmon_reader(self.hwmon, stem)
+        raise SensorError(f"gpu_{metric}: {self.name} has no '{label}' hwmon input.")
+
+    def reader(self, metric):
+        if metric == "usage":
+            p = self.dev + "/gpu_busy_percent"
+            if not os.path.exists(p):
+                raise SensorError(f"gpu_usage: {self.name} has no gpu_busy_percent.")
+            return lambda: float(_read(p))
+        label = {"temp": "edge", "freq": "sclk", "volt": "vddgfx"}[metric]
+        return self._hwmon_label(label, metric)
+
+
+def _pci_has_nvidia_gpu():
+    for d in glob.glob("/sys/bus/pci/devices/*"):
+        try:
+            if _read(d + "/vendor") == "0x10de" and _read(d + "/class").startswith("0x03"):
+                return True
+        except OSError:
             continue
-        if name == "cpu_temp":
-            readers[name] = CpuTemp().read
+    return False
+
+
+def list_gpus():
+    """GPUs the daemon can read, in a stable order: NVIDIA (NVML order), then AMD."""
+    gpus = []
+    if _pci_has_nvidia_gpu():
+        nvml = Nvml()
+        gpus += [NvidiaGpu(nvml, h) for h in nvml.handles()]
+    for card in sorted(glob.glob("/sys/class/drm/card[0-9]*")):
+        if "-" in os.path.basename(card):
+            continue  # connector, not a card
+        drv = os.path.realpath(os.path.join(card, "device", "driver"))
+        if os.path.basename(drv) == "amdgpu":
+            gpus.append(AmdGpu(card))
+    return gpus
+
+
+def pick_gpu(gpus, index):
+    """--gpu N, or the GPU with the most dedicated VRAM (so a discrete card is
+    picked over integrated graphics)."""
+    if not gpus:
+        raise SensorError("No supported GPU found (NVIDIA with the NVIDIA driver, or "
+                          "AMD with amdgpu).")
+    if index is not None:
+        if not 0 <= index < len(gpus):
+            raise SensorError(f"--gpu {index}: there are {len(gpus)} GPUs "
+                              "(see --list-gpus).")
+        return gpus[index]
+    best = max(g.vram for g in gpus)
+    top = [g for g in gpus if g.vram == best]
+    if len(top) > 1:
+        raise SensorError("Several GPUs have the same amount of VRAM; choose one with "
+                          "--gpu N (see --list-gpus).")
+    return top[0]
+
+
+# ---- wiring
+
+def make_readers(show, gpu_index, hwmon_map):
+    """{(name, label_index): reader} for the --show items."""
+    readers = {}
+    gpu = None
+    for name, idx in show:
+        key = (name, idx)
+        if key in hwmon_map:
+            readers[key] = resolve_hwmon(hwmon_map[key])
         elif name == "cpu_usage":
-            readers[name] = CpuUsage().read
+            readers[key] = CpuUsage().read
+        elif name == "cpu_temp":
+            readers[key] = cpu_temp_reader()
+        elif name == "cpu_freq":
+            readers[key] = cpu_freq_reader()
         elif name == "ram_usage":
-            readers[name] = RamUsage().read
-        elif name in ("gpu_temp", "gpu_usage"):
-            nvml = nvml or Nvml(gpu_index)
-            readers[name] = nvml.temp if name == "gpu_temp" else nvml.usage
+            readers[key] = ram_usage
+        elif name.startswith("gpu_"):
+            if gpu is None:
+                gpu = pick_gpu(list_gpus(), gpu_index)
+                log(f"GPU: {gpu.name}")
+            readers[key] = gpu.reader(name[4:])
         else:
-            sys.exit(f"{name}: the keyboard supports it (type 0x{SENSOR_TYPES[name]:02x}), "
-                     "but this daemon has no Linux sensor source for it yet. "
-                     f"Supported now: {', '.join(IMPLEMENTED)}.")
+            raise SensorError(
+                f"{name}: board-specific sensor; map it to a hwmon input with "
+                f"--hwmon {name}{'' if idx == 1 else ':' + str(idx)}=CHIP/INPUT "
+                "(see --list-hwmon).")
     return readers
 
 
-IMPLEMENTED = ("cpu_usage", "cpu_temp", "gpu_usage", "gpu_temp", "ram_usage")
+def print_hwmon():
+    for name, d in hwmon_chips():
+        print(f"{os.path.basename(d)}  {name}")
+        for stem, lab in hwmon_inputs(d).items():
+            try:
+                raw = _read(os.path.join(d, stem + "_input"))
+            except OSError:
+                raw = "?"
+            print(f"    {stem:8s} {lab or '':20s} raw={raw}")
+
+
+def print_gpus():
+    gpus = list_gpus()
+    if not gpus:
+        print("No supported GPU found.")
+    for i, g in enumerate(gpus):
+        print(f"{i}: {g.name}  VRAM {g.vram // (1024 * 1024)} MiB")
 
 
 # ---------------------------------------------------------------- main
@@ -304,6 +548,13 @@ def parse_show(s):
     return name, int(idx) if idx else 1
 
 
+def parse_hwmon(s):
+    left, sep, spec = s.partition("=")
+    if not sep:
+        raise argparse.ArgumentTypeError(f"--hwmon {s!r}: expected SENSOR=CHIP/INPUT")
+    return parse_show(left), spec
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -313,21 +564,45 @@ def main():
                          "LABEL is the number shown after the name, default 1. "
                          "Without --show: cpu_temp and gpu_temp.")
     ap.add_argument("--interval", type=float, default=1.0, help="seconds between updates")
-    ap.add_argument("--gpu-index", type=int, default=0, help="NVML GPU index")
-    ap.add_argument("--list-sensors", action="store_true")
+    ap.add_argument("--gpu", type=int, metavar="N",
+                    help="GPU to read (see --list-gpus). Default: the one with the "
+                         "most dedicated VRAM.")
+    ap.add_argument("--hwmon", action="append", type=parse_hwmon, default=[],
+                    metavar="SENSOR[:LABEL]=CHIP/INPUT",
+                    help="read SENSOR from a hwmon input, e.g. cpu_fan=nct6799/fan2 or "
+                         "chassis_fan:2=nct6799/fan3 (see --list-hwmon). Needed for "
+                         "fans, voltages and VRM; also overrides automatic sources.")
+    ap.add_argument("--list-sensors", action="store_true", help="sensors the keyboard shows")
+    ap.add_argument("--list-gpus", action="store_true", help="GPUs this machine has")
+    ap.add_argument("--list-hwmon", action="store_true", help="hwmon chips and inputs")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args()
 
-    if a.list_sensors:
-        for n, t in SENSOR_TYPES.items():
-            state = "available" if n in IMPLEMENTED else "keyboard only, no Linux source yet"
-            print(f"{n:12s} type 0x{t:02x}  {state}")
-        return
-    a.show = a.show or DEFAULT_SHOW
-    if len(a.show) > 2:
-        ap.error("give one or two --show options")
-
-    readers = make_readers([n for n, _ in a.show], a.gpu_index)
+    try:
+        if a.list_sensors:
+            for n, t in SENSOR_TYPES.items():
+                src = "automatic" if n in AUTO_SENSORS else "needs --hwmon"
+                print(f"{n:12s} type 0x{t:02x}  {src}")
+            return
+        if a.list_gpus:
+            print_gpus()
+            return
+        if a.list_hwmon:
+            print_hwmon()
+            return
+        a.show = a.show or DEFAULT_SHOW
+        if len(a.show) > 2:
+            ap.error("give one or two --show options")
+        hwmon_map = dict(a.hwmon)
+        unused = set(hwmon_map) - set(a.show)
+        if unused:
+            ap.error("--hwmon given for sensors that aren't in --show: "
+                     + ", ".join(n if i == 1 else f"{n}:{i}" for n, i in sorted(unused)))
+        readers = make_readers(a.show, a.gpu, hwmon_map)
+        for key, read in readers.items():
+            read()  # fail now, with a clear message, rather than in the loop
+    except SensorError as e:
+        sys.exit(str(e))
 
     stop = False
 
@@ -352,7 +627,7 @@ def main():
     waiting_logged = False
     while not stop:
         started = time.monotonic()
-        items = [(SENSOR_TYPES[n], idx, readers[n]()) for n, idx in a.show]
+        items = [(SENSOR_TYPES[n], idx, readers[(n, idx)]()) for n, idx in a.show]
         pkt = build_packet(items)
 
         if current is not None:

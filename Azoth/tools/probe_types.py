@@ -61,8 +61,8 @@ def main():
     link = connect()
     print(f"Keyboard answering via {link}", flush=True)
     if a.check:
-        cpu = azoth.CpuTemp().read()
-        gpu = azoth.Nvml(0).temp()
+        cpu = azoth.cpu_temp_reader()()
+        gpu = azoth.pick_gpu(azoth.list_gpus(), None).reader("temp")()
         link.send(azoth.build_packet([(0x01, 1, cpu), (0x11, 1, gpu)]))
         print(f"Sent live CPU {cpu:.0f} C, GPU {gpu:.0f} C", flush=True)
         return
