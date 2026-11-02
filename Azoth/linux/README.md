@@ -26,6 +26,11 @@ Try it in the foreground first:
 | gpu_usage | NVML                                    | yes                 |
 | ram_usage | /proc/meminfo                           | yes                 |
 
+The keyboard also supports CPU/GPU frequency and voltage, VRM temperature,
+DRAM frequency and voltage, and CPU and chassis fan speeds (see
+`--list-sensors` and `../PROTOCOL.md`). The daemon has no Linux source for
+those yet.
+
 With no `--show`, it shows `cpu_temp` and `gpu_temp`. One `--show` gives the
 single layout and two give the dual layout. The number
 after the label on screen ("CPU1") comes from the optional `:N` suffix,
