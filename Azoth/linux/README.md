@@ -22,9 +22,9 @@ Try it in the foreground first:
 |-----------|-----------------------------------------|---------------------|
 | cpu_temp  | k10temp `Tctl` (AMD)                    | yes                 |
 | gpu_temp  | NVML (NVIDIA driver)                    | yes                 |
-| cpu_usage | /proc/stat                              | not yet             |
-| gpu_usage | NVML                                    | not yet             |
-| ram_usage | /proc/meminfo                           | not yet             |
+| cpu_usage | /proc/stat                              | yes                 |
+| gpu_usage | NVML                                    | yes                 |
+| ram_usage | /proc/meminfo                           | yes                 |
 
 With no `--show`, it shows `cpu_temp` and `gpu_temp`. One `--show` gives the
 single layout and two give the dual layout. The number

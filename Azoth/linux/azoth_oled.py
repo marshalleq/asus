@@ -39,14 +39,25 @@ MISSES_BEFORE_RESCAN = 3
 
 DEFAULT_SHOW = [("cpu_temp", 1), ("gpu_temp", 1)]
 
-# Sensor type byte -> (name, description). Confirmed on hardware: 0x01, 0x11.
-# 0x00/0x10/0x30 come from the macOS driver and are not yet seen on screen.
+# Sensor name -> type byte. All checked on the keyboard; see ../PROTOCOL.md.
+# High nibble = device (0 CPU, 1 GPU, 2 VRM, 3 DRAM, 4 chassis fan),
+# low nibble = metric (0 usage %, 1 temp C, 2 freq MHz, 3/4 fan RPM, 5 volt mV).
 SENSOR_TYPES = {
     "cpu_usage": 0x00,
     "cpu_temp": 0x01,
+    "cpu_freq": 0x02,
+    "cpu_fan": 0x03,
+    "cpu_opt_fan": 0x04,
+    "cpu_volt": 0x05,
     "gpu_usage": 0x10,
     "gpu_temp": 0x11,
+    "gpu_freq": 0x12,
+    "gpu_volt": 0x15,
+    "vrm_temp": 0x21,
     "ram_usage": 0x30,
+    "ram_freq": 0x32,
+    "ram_volt": 0x35,
+    "chassis_fan": 0x43,
 }
 
 
@@ -273,7 +284,14 @@ def make_readers(names, gpu_index):
         elif name in ("gpu_temp", "gpu_usage"):
             nvml = nvml or Nvml(gpu_index)
             readers[name] = nvml.temp if name == "gpu_temp" else nvml.usage
+        else:
+            sys.exit(f"{name}: the keyboard supports it (type 0x{SENSOR_TYPES[name]:02x}), "
+                     "but this daemon has no Linux sensor source for it yet. "
+                     f"Supported now: {', '.join(IMPLEMENTED)}.")
     return readers
+
+
+IMPLEMENTED = ("cpu_usage", "cpu_temp", "gpu_usage", "gpu_temp", "ram_usage")
 
 
 # ---------------------------------------------------------------- main
@@ -302,7 +320,8 @@ def main():
 
     if a.list_sensors:
         for n, t in SENSOR_TYPES.items():
-            print(f"{n:10s} type 0x{t:02x}")
+            state = "available" if n in IMPLEMENTED else "keyboard only, no Linux source yet"
+            print(f"{n:12s} type 0x{t:02x}  {state}")
         return
     a.show = a.show or DEFAULT_SHOW
     if len(a.show) > 2:

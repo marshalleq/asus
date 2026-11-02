@@ -61,38 +61,44 @@ byte 4..   up to 15 entries of 4 bytes:
 rest       zero padding to 64 bytes
 ```
 
-Sensor types. The full list comes from the Windows driver
-(`ArmouryKbSDK.dll`, `CHalFunction_M701` HW-info thread @ 0x10056880, which
-switches on the type byte and reads each value from a sensor struct). The
-macOS build only sends 0x00, 0x01, 0x10 and 0x30.
+Sensor types. The list comes from the Windows driver (`ArmouryKbSDK.dll`,
+`CHalFunction_M701` HW-info thread @ 0x10056880, which switches on the type
+byte and reads each value from a sensor struct). **Every type below was
+checked on the keyboard** (Omni receiver, 2026-11-02): the label is drawn by
+the firmware, the number after the device name is the index byte, and values
+are plain integers in the unit shown.
 
-High nibble = device (0 CPU, 1 GPU, 2 VRM, 3 DRAM, 4 chassis fan, 6 other),
-low nibble = metric (0 usage, 1 temperature, 2 frequency, 3/4 fan, 5 voltage).
+High nibble = device: 0 CPU, 1 GPU, 2 VRM, 3 DRAM, 4 chassis fan.
+Low nibble = metric: 0 usage %, 1 temperature °C, 2 frequency MHz,
+3 and 4 fan RPM, 5 voltage mV.
 
-| type | meaning              | evidence                                   | on screen |
-|------|----------------------|--------------------------------------------|-----------|
-| 0x00 | CPU usage %          | macOS log string "CPU Usage"               | not yet   |
-| 0x01 | CPU temperature C    | macOS log string "CPU Temp"                | yes: "CPU1 Temp" |
-| 0x02 | CPU frequency        | Windows: struct field next to temperature  | not yet   |
-| 0x03 | CPU fan speed        | Windows: motherboard fan block             | not yet   |
-| 0x04 | CPU_OPT fan speed    | Windows: motherboard fan block             | not yet   |
-| 0x05 | CPU voltage          | Windows: struct field next to frequency    | not yet   |
-| 0x10 | GPU usage %          | macOS log string "GPU Usage"               | not yet   |
-| 0x11 | GPU temperature C    | nibble pattern                             | yes: "GPU2 Temp" |
-| 0x12 | GPU frequency        | Windows: per-GPU record                    | not yet   |
-| 0x15 | GPU voltage          | Windows: per-GPU record                    | not yet   |
-| 0x21 | VRM temperature      | Windows: `vrm_temperature`                 | not yet   |
-| 0x30 | DRAM usage %         | macOS log string "RAM Usage"               | not yet   |
-| 0x32 | DRAM frequency       | Windows: per-DIMM record                   | not yet   |
-| 0x35 | DRAM voltage         | Windows: per-DIMM record                   | not yet   |
-| 0x43 | chassis fan n speed  | Windows: per-fan array                     | not yet   |
-| 0x64 | laptop battery       | Windows: `GetSystemPowerStatus`            | not yet   |
-| 0x65 | time / date          | Windows: 12-hour format check              | not yet   |
+| type | on screen (index 1)      | unit |
+|------|--------------------------|------|
+| 0x00 | CPU1 Usage               | %    |
+| 0x01 | CPU1 Temp                | °C   |
+| 0x02 | CPU1 Freq.               | MHz  |
+| 0x03 | CPU1 Fan                 | RPM  |
+| 0x04 | CPU1 Fan (CPU_OPT header; same label as 0x03) | RPM |
+| 0x05 | CPU1 Volt                | mV   |
+| 0x10 | GPU1 Usage               | %    |
+| 0x11 | GPU1 Temp                | °C   |
+| 0x12 | GPU1 Freq.               | MHz  |
+| 0x15 | GPU1 Volt                | mV   |
+| 0x21 | VRM1 Temp.               | °C   |
+| 0x30 | DRAM1 Usage              | %    |
+| 0x32 | DRAM1 Freq.              | MHz  |
+| 0x35 | DRAM1 Volt               | mV   |
+| 0x43 | Chassis1 Fan             | RPM  |
 
-Units for frequency, voltage and fan speed are not known yet. There is no
-disk, network or free-memory type.
+Not display types: the Windows driver's IDs 0x64 (laptop battery,
+`GetSystemPowerStatus`) and 0x65 (time/date) are handled inside the driver.
+Sent as types, the firmware draws a generic label with no device name
+("1 Fan" for 0x64, "1 Volt" for 0x65), using the low nibble for the unit.
+There is no disk, network or free-memory type.
 
-The keyboard keeps showing the last frame it received after the stream stops.
+Layout: one item gives the single layout (icon on the left, larger font);
+two items give the dual layout, left and right. The keyboard keeps showing
+the last frame it received after the stream stops.
 
 ## Other OLED / keyboard opcodes (byte 0..1 of the 64-byte command)
 
@@ -125,8 +131,8 @@ native agent then reads the sensors and streams 0x66 packets.
 ## Open questions
 
 1. ~~Which HID interface accepts these writes.~~ Cable: interface 1 (0xFF00).
-2. ~~Is GPU temperature 0x11?~~ Yes, shows "GPU<n> Temp". Does the firmware accept types the Mac build never sends?
-3. What does the display slot byte mean exactly for single vs dual layout?
-4. Does the OLED need a mode command first, or does it show HW info whenever
-   the System Info page is selected with the button?
+2. ~~Is GPU temperature 0x11? Which other types exist?~~ See the type table; all checked on screen.
+3. ~~What does the index byte mean?~~ It is the number shown after the device name ("CPU1"). What 0xFF (sent for index <= 0) displays is untested.
+4. ~~Does the OLED need a mode command first?~~ No: it shows HW info while 0x66
+   packets arrive.
 5. ~~Dongle prefix byte value.~~ Report ID 2 on the receiver's interface 2.
