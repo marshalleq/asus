@@ -127,7 +127,7 @@ class Link:
         try:
             self.fd = os.open(self.path, os.O_RDWR | os.O_NONBLOCK)
         except PermissionError:
-            sys.exit(f"No permission to open {self.path}. Install linux/70-rog-azoth.rules "
+            sys.exit(f"No permission to open {self.path}. Install Azoth/linux/70-rog-azoth.rules "
                      "(see linux/README.md) and log in at the machine's desktop.")
 
     def send(self, pkt):

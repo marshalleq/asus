@@ -61,23 +61,38 @@ byte 4..   up to 15 entries of 4 bytes:
 rest       zero padding to 64 bytes
 ```
 
-Sensor types seen in the macOS build (identified by adjacent log strings):
+Sensor types. The full list comes from the Windows driver
+(`ArmouryKbSDK.dll`, `CHalFunction_M701` HW-info thread @ 0x10056880, which
+switches on the type byte and reads each value from a sensor struct). The
+macOS build only sends 0x00, 0x01, 0x10 and 0x30.
 
-| type | meaning          | value                      |
-|------|------------------|----------------------------|
-| 0x00 | CPU usage        | fraction * 100 -> percent  |
-| 0x01 | CPU temperature  | degrees C, unscaled        |
-| 0x10 | GPU usage        | fraction * 100 -> percent  |
-| 0x30 | RAM usage        | fraction * 100 -> percent  |
+High nibble = device (0 CPU, 1 GPU, 2 VRM, 3 DRAM, 4 chassis fan, 6 other),
+low nibble = metric (0 usage, 1 temperature, 2 frequency, 3/4 fan, 5 voltage).
 
-Pattern: high nibble = device (0 CPU, 1 GPU, 3 RAM; 2 is probably VRM or fan),
-low nibble = metric (0 usage, 1 temperature). **GPU temperature is expected to
-be 0x11** but the macOS build never sends it. To be confirmed on hardware or
-from the Windows driver.
+| type | meaning              | evidence                                   | on screen |
+|------|----------------------|--------------------------------------------|-----------|
+| 0x00 | CPU usage %          | macOS log string "CPU Usage"               | not yet   |
+| 0x01 | CPU temperature C    | macOS log string "CPU Temp"                | yes: "CPU1 Temp" |
+| 0x02 | CPU frequency        | Windows: struct field next to temperature  | not yet   |
+| 0x03 | CPU fan speed        | Windows: motherboard fan block             | not yet   |
+| 0x04 | CPU_OPT fan speed    | Windows: motherboard fan block             | not yet   |
+| 0x05 | CPU voltage          | Windows: struct field next to frequency    | not yet   |
+| 0x10 | GPU usage %          | macOS log string "GPU Usage"               | not yet   |
+| 0x11 | GPU temperature C    | nibble pattern                             | yes: "GPU2 Temp" |
+| 0x12 | GPU frequency        | Windows: per-GPU record                    | not yet   |
+| 0x15 | GPU voltage          | Windows: per-GPU record                    | not yet   |
+| 0x21 | VRM temperature      | Windows: `vrm_temperature`                 | not yet   |
+| 0x30 | DRAM usage %         | macOS log string "RAM Usage"               | not yet   |
+| 0x32 | DRAM frequency       | Windows: per-DIMM record                   | not yet   |
+| 0x35 | DRAM voltage         | Windows: per-DIMM record                   | not yet   |
+| 0x43 | chassis fan n speed  | Windows: per-fan array                     | not yet   |
+| 0x64 | laptop battery       | Windows: `GetSystemPowerStatus`            | not yet   |
+| 0x65 | time / date          | Windows: 12-hour format check              | not yet   |
 
-The UI also has fields for frequency, voltage, fan, DRAM frequency, VRM and
-chassis fans (`cpu_frequency`, `gpu_voltage`, `chassis_fan_count`, ...); those
-are the Windows feature set. Their type codes are not in the macOS build.
+Units for frequency, voltage and fan speed are not known yet. There is no
+disk, network or free-memory type.
+
+The keyboard keeps showing the last frame it received after the stream stops.
 
 ## Other OLED / keyboard opcodes (byte 0..1 of the 64-byte command)
 
