@@ -13,4 +13,15 @@ does the same.
   recovery from `__gopclntab`, annotated disassembly).
 
 Tested with the keyboard on the USB cable and on the ROG Omni Receiver
-(2.4 GHz). Bluetooth is not done yet.
+(2.4 GHz). Bluetooth is not supported.
+
+## Install
+
+See [linux/README.md](linux/README.md#install).
+
+## Keyboard tips
+
+- **Fn + Tab** switches the keyboard between PC and Mac mode (the status area
+  next to the OLED shows PC or MAC).
+- The status icons beside the OLED (caps lock, wireless, battery, PC/MAC) are
+  drawn by the keyboard firmware; nothing in the host protocol sets them.
