@@ -1,0 +1,11 @@
+[Unit]
+Description=ROG Azoth OLED system info (CPU/GPU temperature)
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/azoth_oled.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

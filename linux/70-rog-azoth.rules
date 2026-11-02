@@ -1,0 +1,8 @@
+# ROG Azoth (M701): let the logged-in user write to the keyboard's hidraw nodes,
+# so azoth_oled.py can run without root.
+# Must sort before 73-seat-late.rules, which is what applies the uaccess tag.
+# Install: sudo cp 70-rog-azoth.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+# Keyboard on the USB cable
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1a83", TAG+="uaccess"
+# ROG Omni Receiver (2.4 GHz dongle)
+KERNEL=="hidraw*", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1ace", TAG+="uaccess"

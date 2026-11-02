@@ -1,0 +1,14 @@
+# ASUS software and documents used for analysis. They are not ours to
+# redistribute; keep them local only.
+*.dmg
+*.pdf
+/1.0.0.3/
+/Armoury Crate Uninstall Tool*/
+/ArmouryCrateInstaller_*/
+/M701_FirmwareAutoUpdate_*/
+/ROG AZOTH/
+
+# Local environment
+.venv/
+__pycache__/
+.DS_Store
